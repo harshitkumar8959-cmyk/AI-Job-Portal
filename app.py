@@ -2,12 +2,12 @@ import os
 import sqlite3
 from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from jinja2.exceptions import TemplateNotFound
 
-# Safe email service handling
 try:
     from email_service import send_status_email
 except ImportError:
@@ -15,7 +15,17 @@ except ImportError:
         print(f"Notification: {to_email} -> Status: {status} for {job_title}")
 
 app = Flask(__name__)
-app.secret_key = "ai_job_portal_secret_key"
+
+# Render HTTPS proxy fix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+# Permanent stable session configuration
+app.secret_key = "ai_job_portal_super_permanent_secret_key_2026"
+app.config['SESSION_COOKIE_NAME'] = 'job_portal_session'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = True
+
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -92,7 +102,6 @@ def calculate_match_score(resume_text, job_desc):
         print(f"Scoring calculation failed: {e}")
         return 0.0
 
-# Built-in Signup HTML Fallback (Ensures zero crashes even if templates missing)
 FALLBACK_SIGNUP_HTML = """
 <!DOCTYPE html>
 <html>
@@ -131,7 +140,7 @@ FALLBACK_SIGNUP_HTML = """
                 <label>Register As</label>
                 <select name="role">
                     <option value="Candidate">Candidate</option>
-                    <option value="Recruiter">Recruiter / HR</option>
+                    <option value="Recruiter">Recruiter</option>
                 </select>
             </div>
             <button type="submit">Sign Up</button>
@@ -147,7 +156,8 @@ FALLBACK_SIGNUP_HTML = """
 @app.route('/')
 def home():
     if 'user_id' in session:
-        if session.get('role') == 'Recruiter':
+        role = str(session.get('role', '')).strip().lower()
+        if role == 'recruiter':
             return redirect(url_for('recruiter_dashboard'))
         return redirect(url_for('candidate_dashboard'))
     return redirect(url_for('login'))
@@ -156,10 +166,10 @@ def home():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        name = request.form.get('name')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        role = request.form.get('role', 'Candidate')
+        name = request.form.get('name', '').strip()
+        email = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '').strip()
+        role = request.form.get('role', 'Candidate').strip().capitalize()
 
         conn = get_db_connection()
         try:
@@ -173,40 +183,41 @@ def register():
         finally:
             conn.close()
 
-    # Priority 1: templates/signup.html
     try:
         return render_template('signup.html')
     except (TemplateNotFound, Exception):
         pass
 
-    # Priority 2: templates/register.html
     try:
         return render_template('register.html')
     except (TemplateNotFound, Exception):
         pass
 
-    # Priority 3: Built-in safe template (never crashes)
     return render_template_string(FALLBACK_SIGNUP_HTML)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
+        email = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '').strip()
 
         conn = get_db_connection()
-        user = conn.execute('SELECT * FROM users WHERE email = ? AND password = ?', (email, password)).fetchone()
+        user = conn.execute('SELECT * FROM users WHERE LOWER(email) = ? AND password = ?', (email, password)).fetchone()
         conn.close()
 
         if user:
-            session['user_id'] = user['id']
-            session['name'] = user['name']
-            session['role'] = user['role']
-            if user['role'] == 'Recruiter':
+            session.clear()
+            session['user_id'] = int(user['id'])
+            session['name'] = str(user['name'])
+            user_role = str(user['role']).strip().capitalize()
+            session['role'] = user_role
+
+            if user_role == 'Recruiter':
                 return redirect(url_for('recruiter_dashboard'))
             return redirect(url_for('candidate_dashboard'))
         else:
             flash('Invalid email or password.')
+
     return render_template('login.html')
 
 @app.route('/logout')
@@ -216,7 +227,8 @@ def logout():
 
 @app.route('/recruiter/dashboard')
 def recruiter_dashboard():
-    if session.get('role') != 'Recruiter':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'recruiter':
         return redirect(url_for('login'))
     
     conn = get_db_connection()
@@ -226,14 +238,15 @@ def recruiter_dashboard():
 
 @app.route('/recruiter/post-job', methods=['GET', 'POST'])
 def post_job():
-    if session.get('role') != 'Recruiter':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'recruiter':
         return redirect(url_for('login'))
 
     if request.method == 'POST':
-        title = request.form.get('title')
-        company = request.form.get('company')
+        title = request.form.get('title', '').strip()
+        company = request.form.get('company', '').strip()
         cutoff = int(request.form.get('cutoff', 40))
-        description = request.form.get('description')
+        description = request.form.get('description', '').strip()
 
         conn = get_db_connection()
         conn.execute('INSERT INTO jobs (recruiter_id, title, company, cutoff, description) VALUES (?, ?, ?, ?, ?)',
@@ -245,7 +258,8 @@ def post_job():
 
 @app.route('/recruiter/applications/<int:job_id>')
 def view_applications(job_id):
-    if session.get('role') != 'Recruiter':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'recruiter':
         return redirect(url_for('login'))
 
     conn = get_db_connection()
@@ -262,7 +276,8 @@ def view_applications(job_id):
 
 @app.route('/update-status/<int:app_id>/<string:status>/<int:job_id>')
 def update_status(app_id, status, job_id):
-    if session.get('role') != 'Recruiter':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'recruiter':
         return redirect(url_for('login'))
 
     conn = get_db_connection()
@@ -288,7 +303,8 @@ def update_status(app_id, status, job_id):
 
 @app.route('/candidate/dashboard')
 def candidate_dashboard():
-    if session.get('role') != 'Candidate':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'candidate':
         return redirect(url_for('login'))
 
     conn = get_db_connection()
@@ -304,7 +320,8 @@ def candidate_dashboard():
 
 @app.route('/apply/<int:job_id>', methods=['POST'])
 def apply_job(job_id):
-    if session.get('role') != 'Candidate':
+    role = str(session.get('role', '')).strip().lower()
+    if 'user_id' not in session or role != 'candidate':
         return redirect(url_for('login'))
 
     file = request.files.get('resume')
