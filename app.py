@@ -76,6 +76,7 @@ def init_db():
             title TEXT NOT NULL,
             company TEXT NOT NULL,
             cutoff INTEGER NOT NULL,
+            cutoff_score INTEGER DEFAULT 50,
             description TEXT NOT NULL,
             FOREIGN KEY (recruiter_id) REFERENCES users (id)
         )
@@ -201,9 +202,29 @@ def recruiter_dashboard():
         return redirect(url_for('login'))
     
     conn = get_db_connection()
-    jobs = conn.execute('SELECT * FROM jobs WHERE recruiter_id = ?', (session['user_id'],)).fetchall()
+    raw_jobs = conn.execute('SELECT * FROM jobs WHERE recruiter_id = ? ORDER BY id DESC', (session['user_id'],)).fetchall()
     conn.close()
-    return render_template('recruiter_dashboard.html', jobs=jobs)
+
+    jobs = []
+    for r in raw_jobs:
+        d = dict(r)
+        # Template line 12 cutoff_score compatibility
+        val = d.get('cutoff_score') or d.get('cutoff') or 50
+        d['cutoff_score'] = val
+        d['cutoff'] = val
+        jobs.append(d)
+
+    # Line 12 'job' undefined error fix: default active job provide karein
+    active_job = jobs[0] if jobs else {
+        'id': 1,
+        'title': 'No Active Postings',
+        'company': 'Your Organization',
+        'cutoff_score': 50,
+        'cutoff': 50,
+        'description': ''
+    }
+
+    return render_template('recruiter_dashboard.html', jobs=jobs, job=active_job)
 
 @app.route('/recruiter/post-job', methods=['GET', 'POST'])
 def post_job():
@@ -214,12 +235,12 @@ def post_job():
     if request.method == 'POST':
         title = request.form.get('title', '').strip()
         company = request.form.get('company', '').strip()
-        cutoff = int(request.form.get('cutoff', 50))
+        cutoff_val = int(request.form.get('cutoff') or request.form.get('cutoff_score') or 50)
         description = request.form.get('description', '').strip()
 
         conn = get_db_connection()
-        conn.execute('INSERT INTO jobs (recruiter_id, title, company, cutoff, description) VALUES (?, ?, ?, ?, ?)',
-                     (session['user_id'], title, company, cutoff, description))
+        conn.execute('INSERT INTO jobs (recruiter_id, title, company, cutoff, cutoff_score, description) VALUES (?, ?, ?, ?, ?, ?)',
+                     (session['user_id'], title, company, cutoff_val, cutoff_val, description))
         conn.commit()
         conn.close()
         return redirect(url_for('recruiter_dashboard'))
@@ -233,7 +254,16 @@ def view_applications(job_id):
         return redirect(url_for('login'))
 
     conn = get_db_connection()
-    job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+    raw_job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+    
+    if raw_job:
+        job = dict(raw_job)
+        val = job.get('cutoff_score') or job.get('cutoff') or 50
+        job['cutoff_score'] = val
+        job['cutoff'] = val
+    else:
+        job = {'id': job_id, 'title': 'Job Position', 'company': 'Company', 'cutoff_score': 50, 'cutoff': 50}
+
     raw_apps = conn.execute('''
         SELECT applications.*, users.name as u_name, users.email as u_email
         FROM applications
@@ -244,10 +274,11 @@ def view_applications(job_id):
     conn.close()
 
     applications = []
-    for app_row in raw_apps:
+    for idx, app_row in enumerate(raw_apps, start=1):
         item = dict(app_row)
         matched_str = item.get('matched_skills') or ""
         missing_str = item.get('missing_skills') or ""
+        item['rank'] = f"#{idx}"
         item['matched_list'] = [s.strip() for s in matched_str.split(',') if s.strip()]
         item['missing_list'] = [s.strip() for s in missing_str.split(',') if s.strip()]
         item['resume_filename'] = os.path.basename(item.get('resume_path', ''))
@@ -293,12 +324,13 @@ def candidate_dashboard():
         return redirect(url_for('login'))
 
     conn = get_db_connection()
-    jobs = conn.execute('SELECT * FROM jobs').fetchall()
+    jobs = conn.execute('SELECT * FROM jobs ORDER BY id DESC').fetchall()
     my_applications = conn.execute('''
         SELECT applications.*, jobs.title, jobs.company, jobs.cutoff 
         FROM applications 
         JOIN jobs ON applications.job_id = jobs.id 
         WHERE applications.user_id = ?
+        ORDER BY applications.id DESC
     ''', (session['user_id'],)).fetchall()
     conn.close()
     return render_template('candidate_dashboard.html', jobs=jobs, my_applications=my_applications)
@@ -310,7 +342,15 @@ def apply_job(job_id):
         return redirect(url_for('login'))
 
     conn = get_db_connection()
-    job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+    raw_job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+    if not raw_job:
+        conn.close()
+        return redirect(url_for('candidate_dashboard'))
+
+    job = dict(raw_job)
+    val = job.get('cutoff_score') or job.get('cutoff') or 50
+    job['cutoff_score'] = val
+    job['cutoff'] = val
 
     if request.method == 'POST':
         file = request.files.get('resume')
@@ -323,7 +363,7 @@ def apply_job(job_id):
             score = calculate_match_score(resume_text, job['description'])
             matched_skills, missing_skills = extract_skills_and_match(resume_text, job['description'])
             
-            initial_status = 'Shortlisted' if score >= job['cutoff'] else 'Under Review'
+            initial_status = 'Shortlisted' if score >= job['cutoff_score'] else 'Under Review'
             phone = extract_phone(resume_text)
             exp_level = "Graduate / Fresher"
 
@@ -339,18 +379,18 @@ def apply_job(job_id):
                 phone, exp_level, file_path, score,
                 ", ".join(matched_skills), ", ".join(missing_skills), initial_status
             ))
-            app_id = cursor.lastrowid
             conn.commit()
             conn.close()
 
-            # Candidate Competency Analysis page render
+            # Competency Analysis Screen View
             return render_template(
                 'apply.html',
                 analysis_done=True,
                 candidate_name=session.get('name'),
                 target_role=job['title'],
                 match_score=score,
-                cutoff=job['cutoff'],
+                cutoff=job['cutoff_score'],
+                cutoff_score=job['cutoff_score'],
                 status=initial_status,
                 matched_skills=matched_skills,
                 missing_skills=missing_skills,
