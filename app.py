@@ -15,11 +15,8 @@ except ImportError:
         print(f"Notification: {to_email} -> Status: {status} for {job_title}")
 
 app = Flask(__name__)
-
-# Render HTTPS proxy fix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
-# Permanent stable session configuration
 app.secret_key = "ai_job_portal_super_permanent_secret_key_2026"
 app.config['SESSION_COOKIE_NAME'] = 'job_portal_session'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -102,55 +99,113 @@ def calculate_match_score(resume_text, job_desc):
         print(f"Scoring calculation failed: {e}")
         return 0.0
 
-FALLBACK_SIGNUP_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Sign Up - AI Job Portal</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .card { background: #1e293b; padding: 2rem; border-radius: 10px; width: 100%; max-width: 400px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
-        h2 { text-align: center; margin-bottom: 1.5rem; color: #38bdf8; }
-        .form-group { margin-bottom: 1.2rem; }
-        label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; color: #cbd5e1; }
-        input, select { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; }
-        button { width: 100%; padding: 0.75rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 1rem; }
-        button:hover { background: #1d4ed8; }
-        .footer { text-align: center; margin-top: 1rem; font-size: 0.85rem; color: #94a3b8; }
-        a { color: #38bdf8; text-decoration: none; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <h2>Create Account</h2>
-        <form method="POST" action="/signup">
-            <div class="form-group">
-                <label>Full Name</label>
-                <input type="text" name="name" required placeholder="Enter full name">
-            </div>
-            <div class="form-group">
-                <label>Email Address</label>
-                <input type="email" name="email" required placeholder="name@example.com">
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" required placeholder="Password">
-            </div>
-            <div class="form-group">
-                <label>Register As</label>
-                <select name="role">
-                    <option value="Candidate">Candidate</option>
-                    <option value="Recruiter">Recruiter</option>
-                </select>
-            </div>
-            <button type="submit">Sign Up</button>
-        </form>
-        <div class="footer">
-            Already have an account? <a href="/login">Login here</a>
+# --- CRASH-PROOF BUILT-IN HTML TEMPLATES ---
+BASE_STYLE = """
+<style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .card { background: #1e293b; padding: 25px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+    .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border-bottom: 1px solid #334155; padding-bottom: 15px; }
+    .btn { display: inline-block; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; cursor: pointer; border: none; }
+    .btn-blue { background: #2563eb; color: #fff; }
+    .btn-green { background: #16a34a; color: #fff; }
+    .btn-red { background: #dc2626; color: #fff; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
+    th { background: #0f172a; color: #38bdf8; }
+    input, textarea { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; margin-bottom: 15px; }
+</style>
+"""
+
+HTML_RECRUITER_DASHBOARD = BASE_STYLE + """
+<div class="container">
+    <div class="nav">
+        <h2>Recruiter Dashboard</h2>
+        <div>
+            <a href="/recruiter/post-job" class="btn btn-blue">+ Post New Job</a>
+            <a href="/logout" class="btn btn-red" style="margin-left: 10px;">Logout</a>
         </div>
     </div>
-</body>
-</html>
+    <div class="card">
+        <h3>Your Posted Jobs</h3>
+        {% if jobs %}
+            <table>
+                <tr>
+                    <th>Job Title</th>
+                    <th>Company</th>
+                    <th>Cutoff</th>
+                    <th>Action</th>
+                </tr>
+                {% for job in jobs %}
+                <tr>
+                    <td><b>{{ job['title'] }}</b></td>
+                    <td>{{ job['company'] }}</td>
+                    <td>{{ job['cutoff'] }}%</td>
+                    <td><a href="/recruiter/applications/{{ job['id'] }}" class="btn btn-blue">View Applicants</a></td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p style="color: #94a3b8;">No jobs posted yet. Click "+ Post New Job" to start.</p>
+        {% endif %}
+    </div>
+</div>
+"""
+
+HTML_POST_JOB = BASE_STYLE + """
+<div class="container" style="max-width: 600px;">
+    <div class="card">
+        <h2>Post a New Job</h2>
+        <form method="POST" action="/recruiter/post-job">
+            <label>Job Title</label>
+            <input type="text" name="title" required placeholder="e.g. Python Developer">
+            <label>Company Name</label>
+            <input type="text" name="company" required placeholder="e.g. TechCorp">
+            <label>AI Match Cutoff Score (%)</label>
+            <input type="number" name="cutoff" value="40" min="1" max="100" required>
+            <label>Job Description & Skills Required</label>
+            <textarea name="description" rows="5" required placeholder="Paste requirements here..."></textarea>
+            <button type="submit" class="btn btn-blue" style="width: 100%;">Create Job</button>
+        </form>
+        <p style="text-align: center; margin-top: 15px;"><a href="/recruiter/dashboard" style="color: #38bdf8;">Back to Dashboard</a></p>
+    </div>
+</div>
+"""
+
+HTML_VIEW_APPLICATIONS = BASE_STYLE + """
+<div class="container">
+    <div class="nav">
+        <h2>Applicants for {{ job['title'] }}</h2>
+        <a href="/recruiter/dashboard" class="btn btn-blue">Back to Dashboard</a>
+    </div>
+    <div class="card">
+        {% if applications %}
+            <table>
+                <tr>
+                    <th>Candidate</th>
+                    <th>Email</th>
+                    <th>AI Match Score</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+                {% for app in applications %}
+                <tr>
+                    <td><b>{{ app['candidate_name'] }}</b></td>
+                    <td>{{ app['candidate_email'] }}</td>
+                    <td><span style="color: #38bdf8; font-weight: bold;">{{ app['match_score'] }}%</span></td>
+                    <td><b>{{ app['status'] }}</b></td>
+                    <td>
+                        <a href="/update-status/{{ app['id'] }}/Shortlisted/{{ job['id'] }}" class="btn btn-green">Shortlist</a>
+                        <a href="/update-status/{{ app['id'] }}/Rejected/{{ job['id'] }}" class="btn btn-red">Reject</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p style="color: #94a3b8;">No applications received yet for this position.</p>
+        {% endif %}
+    </div>
+</div>
 """
 
 @app.route('/')
@@ -185,15 +240,11 @@ def register():
 
     try:
         return render_template('signup.html')
-    except (TemplateNotFound, Exception):
-        pass
-
-    try:
-        return render_template('register.html')
-    except (TemplateNotFound, Exception):
-        pass
-
-    return render_template_string(FALLBACK_SIGNUP_HTML)
+    except Exception:
+        try:
+            return render_template('register.html')
+        except Exception:
+            return render_template_string(HTML_POST_JOB)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -234,7 +285,11 @@ def recruiter_dashboard():
     conn = get_db_connection()
     jobs = conn.execute('SELECT * FROM jobs WHERE recruiter_id = ?', (session['user_id'],)).fetchall()
     conn.close()
-    return render_template('recruiter_dashboard.html', jobs=jobs)
+
+    try:
+        return render_template('recruiter_dashboard.html', jobs=jobs)
+    except Exception:
+        return render_template_string(HTML_RECRUITER_DASHBOARD, jobs=jobs)
 
 @app.route('/recruiter/post-job', methods=['GET', 'POST'])
 def post_job():
@@ -254,7 +309,11 @@ def post_job():
         conn.commit()
         conn.close()
         return redirect(url_for('recruiter_dashboard'))
-    return render_template('post_job.html')
+
+    try:
+        return render_template('post_job.html')
+    except Exception:
+        return render_template_string(HTML_POST_JOB)
 
 @app.route('/recruiter/applications/<int:job_id>')
 def view_applications(job_id):
@@ -272,7 +331,11 @@ def view_applications(job_id):
         ORDER BY applications.match_score DESC
     ''', (job_id,)).fetchall()
     conn.close()
-    return render_template('view_applications.html', job=job, applications=applications)
+
+    try:
+        return render_template('view_applications.html', job=job, applications=applications)
+    except Exception:
+        return render_template_string(HTML_VIEW_APPLICATIONS, job=job, applications=applications)
 
 @app.route('/update-status/<int:app_id>/<string:status>/<int:job_id>')
 def update_status(app_id, status, job_id):
