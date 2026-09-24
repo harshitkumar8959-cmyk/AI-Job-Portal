@@ -102,15 +102,15 @@ def home():
         return redirect(url_for('candidate_dashboard'))
     return redirect(url_for('login'))
 
-# Dono routes (/signup aur /register) support karne ke liye:
+# Dono routes (/signup aur /register) aur dono templates ka support
 @app.route('/signup', methods=['GET', 'POST'])
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        name = request.form['name']
-        email = request.form['email']
-        password = request.form['password']
-        role = request.form['role']
+        name = request.form.get('name')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        role = request.form.get('role', 'Candidate')
 
         conn = get_db_connection()
         try:
@@ -123,13 +123,17 @@ def register():
             flash('Email already registered.')
         finally:
             conn.close()
-    return render_template('register.html')
+
+    try:
+        return render_template('signup.html')
+    except Exception:
+        return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
+        email = request.form.get('email')
+        password = request.form.get('password')
 
         conn = get_db_connection()
         user = conn.execute('SELECT * FROM users WHERE email = ? AND password = ?', (email, password)).fetchone()
@@ -167,10 +171,10 @@ def post_job():
         return redirect(url_for('login'))
 
     if request.method == 'POST':
-        title = request.form['title']
-        company = request.form['company']
+        title = request.form.get('title')
+        company = request.form.get('company')
         cutoff = int(request.form.get('cutoff', 40))
-        description = request.form['description']
+        description = request.form.get('description')
 
         conn = get_db_connection()
         conn.execute('INSERT INTO jobs (recruiter_id, title, company, cutoff, description) VALUES (?, ?, ?, ?, ?)',
