@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>Recruiter Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<div class="container-fluid px-4 mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <a href="/" class="btn btn-outline-secondary">&larr; Back to Home</a>
+        <h3 class="fw-bold">Applicant Screening & Decision Board</h3>
+        <span class="badge bg-primary fs-6">Cut-off Threshold: {{ job['cutoff_score'] }}%</span>
+    </div>
+
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-body">
+            <h5 class="text-primary mb-1">{{ job['title'] }} &bull; {{ job['company'] }}</h5>
+            <small class="text-muted"><b>Required Criteria:</b> {{ job['description'] }}</small>
+        </div>
+    </div>
+
+    <div class="card shadow border-0">
+        <div class="card-body p-0">
+            <table class="table table-hover align-middle mb-0 text-center">
+                <thead class="table-dark">
+                    <tr>
+                        <th>Rank</th>
+                        <th>Candidate Profile</th>
+                        <th>Extracted Info</th>
+                        <th>AI Score</th>
+                        <th>Competencies</th>
+                        <th>Status</th>
+                        <th>Hiring Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for app in applications %}
+                    <tr>
+                        <td><span class="badge bg-dark fs-6">#{{ loop.index }}</span></td>
+                        <td class="text-start">
+                            <b>{{ app.name }}</b><br>
+                            <small class="text-muted">{{ app.email }}</small><br>
+                            <a href="/download/{{ app.resume }}" class="badge bg-secondary text-decoration-none">Download PDF</a>
+                        </td>
+                        <td class="text-start">
+                            <small>📞 {{ app.phone }}</small><br>
+                            <small class="badge bg-info-subtle text-info border">{{ app.degree }}</small>
+                        </td>
+                        <td>
+                            <span class="badge fs-6 {% if app.score >= job['cutoff_score'] %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                                {{ app.score }}%
+                            </span>
+                        </td>
+                        <td class="text-start">
+                            <small class="text-success fw-bold">Matched:</small>
+                            {% for m in app.matched %}
+                                <span class="badge bg-success-subtle text-success border me-1">{{ m }}</span>
+                            {% else %}<small class="text-muted">-</small>{% endfor %}<br>
+                            <small class="text-danger fw-bold">Missing:</small>
+                            {% for g in app.missing %}
+                                <span class="badge bg-danger-subtle text-danger border me-1">{{ g.skill }}</span>
+                            {% else %}<small class="text-muted">None</small>{% endfor %}
+                        </td>
+                        <td>
+                            <span class="badge {% if app.status == 'Shortlisted' %}bg-success{% elif app.status == 'Rejected' %}bg-danger{% else %}bg-secondary{% endif %} fs-6">
+                                {{ app.status }}
+                            </span>
+                        </td>
+                        <td>
+                            <div class="btn-group">
+                                <a href="/update-status/{{ app.id }}/Shortlisted/{{ job['id'] }}" class="btn btn-sm btn-outline-success">Shortlist</a>
+                                <a href="/update-status/{{ app.id }}/Rejected/{{ job['id'] }}" class="btn btn-sm btn-outline-danger">Reject</a>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="7" class="text-center py-4 text-muted">No candidate applications submitted yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>
