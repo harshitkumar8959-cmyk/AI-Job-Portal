@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+from collections import defaultdict
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_from_directory
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -8,7 +9,7 @@ from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Local matcher helper import with fallback
+# Matcher import with robust regex fallback
 try:
     from matcher import extract_skills_and_match
 except ImportError:
@@ -21,21 +22,27 @@ except ImportError:
     def extract_skills_and_match(resume_text, job_desc):
         resume_lower = resume_text.lower()
         desc_lower = job_desc.lower()
-        
         req_skills = [s for s in COMMON_SKILLS if re.search(r'\b' + re.escape(s) + r'\b', desc_lower)]
         if not req_skills:
             req_skills = ["python", "sql", "git"]
-            
         matched = [s.title() for s in req_skills if re.search(r'\b' + re.escape(s) + r'\b', resume_lower)]
         missing = [s.title() for s in req_skills if s.title() not in matched]
         return matched, missing
 
-# Safe email service handling
+# Email service fallback
 try:
     from email_service import send_status_email
 except ImportError:
     def send_status_email(to_email, status, job_title):
-        print(f"Notification: {to_email} | Status: {status} | Job: {job_title}")
+        print(f"Notification bypassed: {to_email} | Status: {status} | Job: {job_title}")
+
+# Flask context dictionary jo kabhi UndefinedError nahi deta
+class SafeDict(defaultdict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(lambda: "", *args, **kwargs)
+    def __getitem__(self, key):
+        val = super().get(key)
+        return "" if val is None else val
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -130,7 +137,7 @@ def calculate_match_score(resume_text, job_desc):
         similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
         return round(float(similarity) * 100, 1)
     except Exception as e:
-        print(f"Scoring calculation failed: {e}")
+        print(f"Scoring error: {e}")
         return 0.0
 
 @app.route('/')
@@ -203,28 +210,55 @@ def recruiter_dashboard():
     
     conn = get_db_connection()
     raw_jobs = conn.execute('SELECT * FROM jobs WHERE recruiter_id = ? ORDER BY id DESC', (session['user_id'],)).fetchall()
+    
+    # Har job ke liye applications nikalna
+    raw_apps = conn.execute('''
+        SELECT applications.*, jobs.title, users.name as u_name 
+        FROM applications 
+        JOIN jobs ON applications.job_id = jobs.id 
+        JOIN users ON applications.user_id = users.id 
+        WHERE jobs.recruiter_id = ? 
+        ORDER BY applications.match_score DESC
+    ''', (session['user_id'],)).fetchall()
     conn.close()
 
     jobs = []
     for r in raw_jobs:
-        d = dict(r)
-        # Template line 12 cutoff_score compatibility
+        d = SafeDict(dict(r))
         val = d.get('cutoff_score') or d.get('cutoff') or 50
         d['cutoff_score'] = val
         d['cutoff'] = val
         jobs.append(d)
 
-    # Line 12 'job' undefined error fix: default active job provide karein
-    active_job = jobs[0] if jobs else {
-        'id': 1,
+    applications = [SafeDict(dict(a)) for a in raw_apps]
+    
+    # Job context object
+    active_job = jobs[0] if jobs else SafeDict({
+        'id': 0,
         'title': 'No Active Postings',
         'company': 'Your Organization',
         'cutoff_score': 50,
         'cutoff': 50,
         'description': ''
+    })
+
+    stats = {
+        'total_jobs': len(jobs),
+        'total_applicants': len(applications),
+        'shortlisted': sum(1 for a in applications if a.get('status') == 'Shortlisted'),
+        'under_review': sum(1 for a in applications if a.get('status') == 'Under Review')
     }
 
-    return render_template('recruiter_dashboard.html', jobs=jobs, job=active_job)
+    return render_template(
+        'recruiter_dashboard.html',
+        jobs=jobs,
+        job=active_job,
+        applications=applications,
+        stats=stats,
+        total_jobs=len(jobs),
+        total_applicants=len(applications),
+        recruiter_name=session.get('name')
+    )
 
 @app.route('/recruiter/post-job', methods=['GET', 'POST'])
 def post_job():
@@ -256,13 +290,10 @@ def view_applications(job_id):
     conn = get_db_connection()
     raw_job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
     
-    if raw_job:
-        job = dict(raw_job)
-        val = job.get('cutoff_score') or job.get('cutoff') or 50
-        job['cutoff_score'] = val
-        job['cutoff'] = val
-    else:
-        job = {'id': job_id, 'title': 'Job Position', 'company': 'Company', 'cutoff_score': 50, 'cutoff': 50}
+    job = SafeDict(dict(raw_job)) if raw_job else SafeDict({'id': job_id, 'title': 'Job Position', 'company': 'Company', 'cutoff_score': 50, 'cutoff': 50})
+    val = job.get('cutoff_score') or job.get('cutoff') or 50
+    job['cutoff_score'] = val
+    job['cutoff'] = val
 
     raw_apps = conn.execute('''
         SELECT applications.*, users.name as u_name, users.email as u_email
@@ -275,7 +306,7 @@ def view_applications(job_id):
 
     applications = []
     for idx, app_row in enumerate(raw_apps, start=1):
-        item = dict(app_row)
+        item = SafeDict(dict(app_row))
         matched_str = item.get('matched_skills') or ""
         missing_str = item.get('missing_skills') or ""
         item['rank'] = f"#{idx}"
@@ -347,7 +378,7 @@ def apply_job(job_id):
         conn.close()
         return redirect(url_for('candidate_dashboard'))
 
-    job = dict(raw_job)
+    job = SafeDict(dict(raw_job))
     val = job.get('cutoff_score') or job.get('cutoff') or 50
     job['cutoff_score'] = val
     job['cutoff'] = val
@@ -382,7 +413,7 @@ def apply_job(job_id):
             conn.commit()
             conn.close()
 
-            # Competency Analysis Screen View
+            # Competency Analysis Screen
             return render_template(
                 'apply.html',
                 analysis_done=True,
