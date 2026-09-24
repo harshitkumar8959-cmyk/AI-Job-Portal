@@ -102,6 +102,8 @@ def home():
         return redirect(url_for('candidate_dashboard'))
     return redirect(url_for('login'))
 
+# Dono routes (/signup aur /register) support karne ke liye:
+@app.route('/signup', methods=['GET', 'POST'])
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
