@@ -1,17 +1,18 @@
 import os
 import sqlite3
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, render_template_string, request, redirect, url_for, session, flash
 from werkzeug.utils import secure_filename
 from pypdf import PdfReader
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from jinja2.exceptions import TemplateNotFound
 
-# Optional email utility import
+# Safe email service handling
 try:
     from email_service import send_status_email
 except ImportError:
     def send_status_email(to_email, status, job_title):
-        print(f"Mock email sent to {to_email} | Status: {status} | Job: {job_title}")
+        print(f"Notification: {to_email} -> Status: {status} for {job_title}")
 
 app = Flask(__name__)
 app.secret_key = "ai_job_portal_secret_key"
@@ -29,7 +30,6 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +39,6 @@ def init_db():
             role TEXT NOT NULL
         )
     ''')
-    # Jobs table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +50,6 @@ def init_db():
             FOREIGN KEY (recruiter_id) REFERENCES users (id)
         )
     ''')
-    # Applications table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS applications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +92,58 @@ def calculate_match_score(resume_text, job_desc):
         print(f"Scoring calculation failed: {e}")
         return 0.0
 
+# Built-in Signup HTML Fallback (Ensures zero crashes even if templates missing)
+FALLBACK_SIGNUP_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sign Up - AI Job Portal</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: #1e293b; padding: 2rem; border-radius: 10px; width: 100%; max-width: 400px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        h2 { text-align: center; margin-bottom: 1.5rem; color: #38bdf8; }
+        .form-group { margin-bottom: 1.2rem; }
+        label { display: block; margin-bottom: 0.4rem; font-size: 0.9rem; color: #cbd5e1; }
+        input, select { width: 100%; padding: 0.75rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; box-sizing: border-box; }
+        button { width: 100%; padding: 0.75rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 1rem; }
+        button:hover { background: #1d4ed8; }
+        .footer { text-align: center; margin-top: 1rem; font-size: 0.85rem; color: #94a3b8; }
+        a { color: #38bdf8; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Create Account</h2>
+        <form method="POST" action="/signup">
+            <div class="form-group">
+                <label>Full Name</label>
+                <input type="text" name="name" required placeholder="Enter full name">
+            </div>
+            <div class="form-group">
+                <label>Email Address</label>
+                <input type="email" name="email" required placeholder="name@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" name="password" required placeholder="Password">
+            </div>
+            <div class="form-group">
+                <label>Register As</label>
+                <select name="role">
+                    <option value="Candidate">Candidate</option>
+                    <option value="Recruiter">Recruiter / HR</option>
+                </select>
+            </div>
+            <button type="submit">Sign Up</button>
+        </form>
+        <div class="footer">
+            Already have an account? <a href="/login">Login here</a>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
 @app.route('/')
 def home():
     if 'user_id' in session:
@@ -102,7 +152,6 @@ def home():
         return redirect(url_for('candidate_dashboard'))
     return redirect(url_for('login'))
 
-# Dono routes (/signup aur /register) aur dono templates ka support
 @app.route('/signup', methods=['GET', 'POST'])
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -124,10 +173,20 @@ def register():
         finally:
             conn.close()
 
+    # Priority 1: templates/signup.html
     try:
         return render_template('signup.html')
-    except Exception:
+    except (TemplateNotFound, Exception):
+        pass
+
+    # Priority 2: templates/register.html
+    try:
         return render_template('register.html')
+    except (TemplateNotFound, Exception):
+        pass
+
+    # Priority 3: Built-in safe template (never crashes)
+    return render_template_string(FALLBACK_SIGNUP_HTML)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -201,18 +260,15 @@ def view_applications(job_id):
     conn.close()
     return render_template('view_applications.html', job=job, applications=applications)
 
-# Crash-proof status update route
 @app.route('/update-status/<int:app_id>/<string:status>/<int:job_id>')
 def update_status(app_id, status, job_id):
     if session.get('role') != 'Recruiter':
         return redirect(url_for('login'))
 
     conn = get_db_connection()
-    # 1. Update status in database
     conn.execute('UPDATE applications SET status = ? WHERE id = ?', (status, app_id))
     conn.commit()
 
-    # 2. Fetch details for notification
     data = conn.execute('''
         SELECT users.email, users.name, jobs.title 
         FROM applications 
@@ -222,12 +278,11 @@ def update_status(app_id, status, job_id):
     ''', (app_id,)).fetchone()
     conn.close()
 
-    # 3. Safe notification block
     if data:
         try:
             send_status_email(data['email'], status, data['title'])
         except Exception as e:
-            print(f"Notification error bypassed safely: {e}")
+            print(f"Notification bypassed: {e}")
 
     return redirect(url_for('view_applications', job_id=job_id))
 
